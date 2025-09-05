@@ -1,0 +1,54 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 665B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:18-alpine
+#2 DONE 1.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [1/8] FROM docker.io/library/node:18-alpine@sha256:8d6421d663b4c28fd3ebc498332f249011d118945588d0a35cb9bc4b8ca09d9e
+#4 resolve docker.io/library/node:18-alpine@sha256:8d6421d663b4c28fd3ebc498332f249011d118945588d0a35cb9bc4b8ca09d9e 0.0s done
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 96.69kB 0.2s done
+#5 DONE 0.2s
+
+#6 [2/8] WORKDIR /app
+#6 CACHED
+
+#7 [3/8] RUN apk add --no-cache     imagemagick     ghostscript     poppler-utils     ffmpeg     pandoc     libreoffice     curl     && rm -rf /var/cache/apk/*
+#7 CACHED
+
+#8 [4/8] COPY package*.json ./
+#8 CACHED
+
+#9 [5/8] RUN npm install --production
+#9 CACHED
+
+#10 [6/8] COPY . .
+#10 DONE 0.6s
+
+#11 [7/8] RUN mkdir -p uploads output logs
+#11 DONE 0.4s
+
+#12 [8/8] RUN chmod +x server.js
+#12 DONE 0.3s
+
+#13 exporting to image
+#13 exporting layers
+#13 exporting layers 0.4s done
+#13 exporting manifest sha256:3dac4290b109ad602df8ac1a7d37a4c71ae9b5646b4fb38167e50cbeaf4a609c 0.0s done
+#13 exporting config sha256:f8df52e2868ff8d1cf8765699c89329a392e3b95d1269443e852d1f687445afa 0.0s done
+#13 exporting attestation manifest sha256:f9d67a7d10c27cfdae3268f11077d0ae4fb93c3466cf3ef8362e344f9d4d6cc8 0.0s done
+#13 exporting manifest list sha256:a98669cc7cde9ff3df3b442643573a2c677c5c68b55d655a524bd61d08fb5d77 0.0s done
+#13 naming to docker.io/library/allfileconverter-backend:rebuild-20250830-132149
+#13 naming to docker.io/library/allfileconverter-backend:rebuild-20250830-132149 done
+#13 unpacking to docker.io/library/allfileconverter-backend:rebuild-20250830-132149
+#13 unpacking to docker.io/library/allfileconverter-backend:rebuild-20250830-132149 0.3s done
+#13 DONE 0.9s

@@ -1,0 +1,66 @@
+# Docker Compose for AllFileConverter Local Testing
+# Use this to test the application before AWS deployment
+
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: allfileconverter-backend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - CORS_ORIGIN=http://127.0.0.1:8080
+      - MAX_FILE_SIZE=104857600
+      - UPLOAD_TIMEOUT=300000
+      - LOG_LEVEL=info
+    volumes:
+      - ./backend/uploads:/app/uploads
+      - ./backend/output:/app/output
+      - ./backend/logs:/app/logs
+    networks:
+      - allfileconverter-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: allfileconverter-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - allfileconverter-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+networks:
+  allfileconverter-network:
+    driver: bridge
+    name: allfileconverter-network
+
+volumes:
+  backend-uploads:
+    driver: local
+  backend-output:
+    driver: local
+  backend-logs:
+    driver: local

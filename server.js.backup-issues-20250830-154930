@@ -1,0 +1,382 @@
+﻿const express = require('express');
+const multer = require('multer');
+const cors = require('cors');
+const fs = require('fs-extra');
+const path = require('path');
+const { exec } = require('child_process');
+const { promisify } = require('util');
+const execAsync = promisify(exec);
+const { v4: uuidv4 } = require('uuid');
+const winston = require('winston');
+
+// Configure Winston logger
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.errors({ stack: true }),
+    winston.format.json()
+  ),
+  defaultMeta: { service: 'allfileconverter-backend' },
+  transports: [
+    new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'logs/combined.log' }),
+    new winston.transports.Console({
+      format: winston.format.simple()
+    })
+  ]
+});
+
+// Ensure logs directory exists
+fs.ensureDirSync(path.join(__dirname, 'logs'));
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Request logging middleware
+app.use((req, res, next) => {
+  logger.info(`${req.method} ${req.url}`, {
+    ip: req.ip,
+    userAgent: req.get('User-Agent')
+  });
+  next();
+});
+
+// CORS configuration
+app.use(cors({
+  origin: process.env.FRONTEND_URL || '*',
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type'],
+  maxAge: 86400 // 24 hours
+}));
+
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Create necessary directories
+const uploadsDir = path.join(__dirname, 'uploads');
+const outputDir = path.join(__dirname, 'output');
+fs.ensureDirSync(uploadsDir);
+fs.ensureDirSync(outputDir);
+
+// Security headers middleware
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;");
+  
+  // Remove server header
+  res.removeHeader('X-Powered-By');
+  
+  next();
+});
+
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueName = `${uuidv4()}-${file.originalname}`;
+    cb(null, uniqueName);
+  }
+});
+
+const upload = multer({
+  storage: storage,
+  limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit
+});
+
+// Available conversion tools
+const tools = {
+  ffmpeg: 'ffmpeg',
+  pandoc: 'pandoc',
+  pdftk: 'pdftk',
+  ghostscript: 'gs',
+  libreoffice: 'libreoffice',
+  handbrake: 'HandBrakeCLI',
+  imagemagick: 'convert',
+  poppler: 'pdftoppm'
+};
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  logger.info('Health check requested');
+  res.status(200).json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    service: 'allfileconverter-backend',
+    version: '1.0.0',
+    uptime: process.uptime()
+  });
+});
+
+// Get supported formats endpoint
+app.get('/api/convert/formats', (req, res) => {
+  logger.info('Supported formats requested');
+  res.status(200).json({
+    supported_formats: {
+      input: ['pdf', 'docx', 'doc', 'txt', 'rtf', 'odt', 'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff', 'mp4', 'avi', 'mov', 'wmv', 'flv', 'mp3', 'wav', 'flac', 'aac'],
+      output: ['pdf', 'docx', 'doc', 'txt', 'rtf', 'odt', 'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff', 'mp4', 'avi', 'mov', 'wmv', 'mp3', 'wav', 'flac']
+    }
+  });
+});
+
+// File conversion endpoint
+app.post('/api/convert', upload.single('file'), async (req, res) => {
+  const startTime = Date.now();
+  let inputFilePath = null;
+  let outputFilePath = null;
+  
+  try {
+    logger.info('File conversion request received', {
+      originalName: req.file?.originalname,
+      targetFormat: req.body?.targetFormat,
+      fileSize: req.file?.size
+    });
+
+    if (!req.file) {
+      logger.warn('No file uploaded');
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const targetFormat = req.body.targetFormat;
+    if (!targetFormat) {
+      logger.warn('No target format specified');
+      return res.status(400).json({ error: 'Target format not specified' });
+    }
+
+    inputFilePath = req.file.path;
+    const inputExt = path.extname(req.file.originalname).toLowerCase().slice(1);
+    const outputFileName = `${path.parse(req.file.originalname).name}.${targetFormat}`;
+    outputFilePath = path.join(outputDir, `${uuidv4()}-${outputFileName}`);
+
+    logger.info('Starting conversion', {
+      inputFormat: inputExt,
+      outputFormat: targetFormat,
+      inputPath: inputFilePath,
+      outputPath: outputFilePath
+    });
+
+    // Conversion logic based on file types
+    let conversionCommand = '';
+    let conversionSuccess = false;
+
+    // Document conversions using Pandoc
+    if (['txt', 'md', 'rtf', 'docx', 'doc', 'odt'].includes(inputExt) && 
+        ['pdf', 'docx', 'doc', 'txt', 'rtf', 'odt', 'html'].includes(targetFormat)) {
+      
+      if (targetFormat === 'pdf') {
+        conversionCommand = `pandoc "${inputFilePath}" -o "${outputFilePath}" --pdf-engine=wkhtmltopdf`;
+      } else {
+        conversionCommand = `pandoc "${inputFilePath}" -o "${outputFilePath}"`;
+      }
+      
+      try {
+        const { stdout, stderr } = await execAsync(conversionCommand);
+        if (stderr) logger.warn('Pandoc stderr:', stderr);
+        conversionSuccess = true;
+        logger.info('Pandoc conversion successful');
+      } catch (error) {
+        logger.error('Pandoc conversion failed:', error.message);
+        // Fallback to LibreOffice for document conversions
+        if (['docx', 'doc', 'odt'].includes(inputExt) && targetFormat === 'pdf') {
+          try {
+            conversionCommand = `libreoffice --headless --convert-to pdf --outdir "${path.dirname(outputFilePath)}" "${inputFilePath}"`;
+            await execAsync(conversionCommand);
+            
+            // LibreOffice creates files with original name, need to rename
+            const libreOutputPath = path.join(path.dirname(outputFilePath), `${path.parse(req.file.originalname).name}.pdf`);
+            if (fs.existsSync(libreOutputPath)) {
+              fs.moveSync(libreOutputPath, outputFilePath);
+              conversionSuccess = true;
+              logger.info('LibreOffice fallback conversion successful');
+            }
+          } catch (libreError) {
+            logger.error('LibreOffice fallback failed:', libreError.message);
+          }
+        }
+      }
+    }
+    
+    // Image conversions using ImageMagick
+    else if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff', 'webp'].includes(inputExt) && 
+             ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff', 'webp', 'pdf'].includes(targetFormat)) {
+      
+      conversionCommand = `convert "${inputFilePath}" "${outputFilePath}"`;
+      
+      try {
+        const { stdout, stderr } = await execAsync(conversionCommand);
+        if (stderr) logger.warn('ImageMagick stderr:', stderr);
+        conversionSuccess = true;
+        logger.info('ImageMagick conversion successful');
+      } catch (error) {
+        logger.error('ImageMagick conversion failed:', error.message);
+      }
+    }
+    
+    // Video conversions using FFmpeg
+    else if (['mp4', 'avi', 'mov', 'wmv', 'flv', 'mkv', 'webm'].includes(inputExt) && 
+             ['mp4', 'avi', 'mov', 'wmv', 'flv', 'mkv', 'webm', 'mp3', 'wav'].includes(targetFormat)) {
+      
+      if (['mp3', 'wav', 'flac', 'aac'].includes(targetFormat)) {
+        // Audio extraction
+        conversionCommand = `ffmpeg -i "${inputFilePath}" -vn -acodec copy "${outputFilePath}"`;
+      } else {
+        // Video conversion
+        conversionCommand = `ffmpeg -i "${inputFilePath}" -c:v libx264 -c:a aac "${outputFilePath}"`;
+      }
+      
+      try {
+        const { stdout, stderr } = await execAsync(conversionCommand);
+        if (stderr) logger.warn('FFmpeg stderr:', stderr);
+        conversionSuccess = true;
+        logger.info('FFmpeg conversion successful');
+      } catch (error) {
+        logger.error('FFmpeg conversion failed:', error.message);
+      }
+    }
+    
+    // Audio conversions using FFmpeg
+    else if (['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a'].includes(inputExt) && 
+             ['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a'].includes(targetFormat)) {
+      
+      conversionCommand = `ffmpeg -i "${inputFilePath}" "${outputFilePath}"`;
+      
+      try {
+        const { stdout, stderr } = await execAsync(conversionCommand);
+        if (stderr) logger.warn('FFmpeg audio stderr:', stderr);
+        conversionSuccess = true;
+        logger.info('FFmpeg audio conversion successful');
+      } catch (error) {
+        logger.error('FFmpeg audio conversion failed:', error.message);
+      }
+    }
+    
+    // PDF conversions using Ghostscript
+    else if (inputExt === 'pdf' && ['jpg', 'jpeg', 'png', 'tiff'].includes(targetFormat)) {
+      
+      conversionCommand = `gs -dNOPAUSE -dBATCH -sDEVICE=${targetFormat === 'jpg' || targetFormat === 'jpeg' ? 'jpeg' : targetFormat} -r300 -sOutputFile="${outputFilePath}" "${inputFilePath}"`;
+      
+      try {
+        const { stdout, stderr } = await execAsync(conversionCommand);
+        if (stderr) logger.warn('Ghostscript stderr:', stderr);
+        conversionSuccess = true;
+        logger.info('Ghostscript conversion successful');
+      } catch (error) {
+        logger.error('Ghostscript conversion failed:', error.message);
+      }
+    }
+    
+    else {
+      logger.warn('Unsupported conversion', { inputExt, targetFormat });
+      return res.status(400).json({ 
+        error: `Conversion from ${inputExt} to ${targetFormat} is not supported` 
+      });
+    }
+
+    if (!conversionSuccess || !fs.existsSync(outputFilePath)) {
+      logger.error('Conversion failed - output file not created');
+      return res.status(500).json({ error: 'Conversion failed' });
+    }
+
+    const processingTime = Date.now() - startTime;
+    logger.info('Conversion completed successfully', {
+      processingTime: `${processingTime}ms`,
+      outputFileSize: fs.statSync(outputFilePath).size
+    });
+
+    // Send the converted file
+    res.download(outputFilePath, outputFileName, (err) => {
+      if (err) {
+        logger.error('Error sending file:', err.message);
+      }
+      
+      // Clean up files
+      setTimeout(() => {
+        try {
+          if (fs.existsSync(inputFilePath)) fs.unlinkSync(inputFilePath);
+          if (fs.existsSync(outputFilePath)) fs.unlinkSync(outputFilePath);
+          logger.info('Temporary files cleaned up');
+        } catch (cleanupError) {
+          logger.error('Error cleaning up files:', cleanupError.message);
+        }
+      }, 5000); // 5 second delay to ensure download completes
+    });
+
+  } catch (error) {
+    logger.error('Conversion error:', error.message);
+    
+    // Clean up files on error
+    try {
+      if (inputFilePath && fs.existsSync(inputFilePath)) fs.unlinkSync(inputFilePath);
+      if (outputFilePath && fs.existsSync(outputFilePath)) fs.unlinkSync(outputFilePath);
+    } catch (cleanupError) {
+      logger.error('Error cleaning up files after error:', cleanupError.message);
+    }
+    
+    res.status(500).json({ error: 'Internal server error during conversion' });
+  }
+});
+
+// Get available tools endpoint
+app.get('/api/tools', async (req, res) => {
+  logger.info('Tools availability check requested');
+  
+  const toolStatus = {};
+  
+  for (const [toolName, command] of Object.entries(tools)) {
+    try {
+      await execAsync(`${command} --version`);
+      toolStatus[toolName] = { available: true, command };
+    } catch (error) {
+      toolStatus[toolName] = { available: false, command, error: error.message };
+    }
+  }
+  
+  res.status(200).json({
+    tools: toolStatus,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// 404 handler
+app.use((req, res, next) => {
+  logger.warn('404 - Route not found', {
+    method: req.method,
+    url: req.url,
+    ip: req.ip
+  });
+  
+  res.status(404).json({
+    error: 'Route not found',
+    message: 'The requested endpoint does not exist',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Start server
+console.log(" Server starting on port 3000...");
+app.listen(PORT, '0.0.0.0', () => {
+  logger.info(`AllFileConverter backend server started`, {
+    port: PORT,
+    environment: process.env.NODE_ENV || 'development',
+    timestamp: new Date().toISOString()
+  });
+  console.log(` Server running on http://0.0.0.0:${PORT}`);
+  console.log(` Health check: http://0.0.0.0:${PORT}/api/health`);
+  console.log(` Convert API: http://0.0.0.0:${PORT}/api/convert`);
+});
+
+// Graceful shutdown handlers
+process.on('SIGTERM', () => {
+  logger.info('SIGTERM received, shutting down gracefully');
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  logger.info('SIGINT received, shutting down gracefully');
+  process.exit(0);
+});

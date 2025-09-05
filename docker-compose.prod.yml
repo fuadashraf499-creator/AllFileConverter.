@@ -1,0 +1,62 @@
+# Docker Compose for AllFileConverter Production Deployment
+# Optimized for AWS ECS deployment
+
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: allfileconverter-backend-prod
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - FRONTEND_URL=${FRONTEND_URL:-https://your-domain.com}
+      - MAX_FILE_SIZE=104857600
+      - UPLOAD_TIMEOUT=300000
+      - LOG_LEVEL=warn
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    # Remove port mapping for production (handled by ALB)
+    # ports:
+    #   - "3000:3000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: allfileconverter-frontend-prod
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    # Remove port mapping for production (handled by ALB)
+    # ports:
+    #   - "80:80"
+
+# Remove networks for ECS (uses awsvpc mode)
+# networks:
+#   allfileconverter-network:
+#     driver: bridge
+
+# Note: Volumes should be handled by AWS EFS or S3 in production
+# volumes:
+#   backend-uploads:
+#     driver: local
+#   backend-output:
+#     driver: local
+#   backend-logs:
+#     driver: local
